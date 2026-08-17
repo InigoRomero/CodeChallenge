@@ -2,14 +2,12 @@ import { describe, expect, it } from "vitest";
 import { formatMoney, formatPercent } from "@/lib/format";
 
 describe("formatMoney", () => {
-  it("uses a fixed locale so separators don't follow the browser (BUGS.md #6)", () => {
-    // On an es-ES browser toLocaleString() with no locale produced "$215.000", which
-    // reads as 215 dollars and change rather than 215 thousand.
+  it("uses a fixed locale so separators don't follow the browser", () => {
     expect(formatMoney(215000, { showCents: false })).toBe("$215,000");
     expect(formatMoney(1875000)).toBe("$1,875,000.00");
   });
 
-  it("puts the sign before the symbol (BUGS.md #21)", () => {
+  it("puts the sign before the symbol", () => {
     expect(formatMoney(-500, { showCents: false })).toBe("-$500");
     expect(formatMoney(-500, { currency: "EUR" })).toBe("-€500.00");
   });

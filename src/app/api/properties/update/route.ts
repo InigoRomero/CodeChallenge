@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { findRawPropertyById } from "@/data/normalize";
+import { shouldInjectFailure } from "@/lib/chaos";
 
 interface UpdatePropertyBody {
   id?: unknown;
@@ -7,14 +8,10 @@ interface UpdatePropertyBody {
   income?: unknown;
 }
 
-// A plain decimal amount. Deliberately narrower than Number(): that accepts "  " as 0,
-// "0x1f" as 31 and "1e3" as 1000, none of which a user typed into a money field.
+// Narrower than Number(), which reads "  " as 0, "0x1f" as 31 and "1e3" as 1000.
 const DECIMAL_AMOUNT = /^\d+(\.\d+)?$/;
 
-// Parses one optional numeric field. Returns undefined when the field is absent, null when
-// it is present but isn't a usable amount (so callers can tell "not sent" from "sent as
-// garbage"). Negatives are rejected: neither a property value nor a monthly income can be
-// below zero, and silently storing one corrupts every aggregate downstream.
+// undefined = field absent, null = present but unusable. Callers need to tell them apart.
 function parseOptionalAmount(raw: unknown): number | undefined | null {
   if (raw === undefined || raw === null) return undefined;
 
@@ -33,7 +30,7 @@ function parseOptionalAmount(raw: unknown): number | undefined | null {
 }
 
 export async function PATCH(request: Request) {
-  if (Math.random() < 0.1) {
+  if (shouldInjectFailure(0.1)) {
     return new NextResponse("server error", { status: 500 });
   }
 
@@ -67,9 +64,8 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ ok: false, reason: "not found" }, { status: 404 });
   }
 
-  // NOTE: mutates the in-memory RAW_PROPERTIES module singleton. Fine for this mock
-  // "database"; a real deployment needs a store that survives restarts and is not
-  // per-instance. Writes here are intentionally the only path that mutates raw rows.
+  // Mutates the in-memory module singleton: writes survive neither a restart nor a
+  // second instance. The only path in the app that mutates raw rows.
   if (value !== undefined) prop.currentValue = value;
   if (income !== undefined) prop.monthlyIncomeOverride = income;
 

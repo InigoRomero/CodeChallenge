@@ -1,6 +1,5 @@
-// Centralized normalization layer for the RAW_* mock "database".
-// Every API route should read properties/owners/transactions through here instead
-// of re-resolving the us-system/spain-system field synonyms itself.
+// The one place the us-system/spain-system field synonyms get resolved. Every API route
+// reads the RAW_* tables through here rather than re-resolving them itself.
 
 import {
   RAW_OWNERS,
@@ -101,7 +100,6 @@ export function normalizeProperty(p: RawPropertyRow): PropertyListItem {
   };
 }
 
-// Active-only, normalized properties -- the source every listing/aggregation endpoint should read from.
 export function getActiveProperties(): PropertyListItem[] {
   return RAW_PROPERTIES.filter(isPropertyActive).map(normalizeProperty);
 }

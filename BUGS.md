@@ -8,7 +8,7 @@ verified.
 | #  | Symptom | Root cause | Status |
 |----|---------|-----------|--------|
 | 1  | Polling crashed the page on a failed request | No `r.ok` check, no `.catch` on the poll | Fixed |
-| 2  | `portfolio-summary` 500s | Injected failure rate (kept deliberately) | By design |
+| 2  | `portfolio-summary` 500s | Injected failure rate, unconditional | Fixed (moved behind `CHAOS=1`) |
 | 3  | `$NaN` / `NaN%` in Summary after a failed load | No error state; error body has no `data` | Fixed |
 | 4  | `Monthly Cashflow: $NaN` on every successful load | `amount: Number("N/A")` + `??` doesn't catch `NaN` | Fixed |
 | 5  | Currency selector didn't reach property cards | `"$"` hardcoded in `PropertyCard` | Fixed |
@@ -39,19 +39,23 @@ verified.
 | 30 | `{"value":"  "}` stored as `$0`; `"0x1f"` as 31; negatives accepted | Validation leaned on `Number()` | Fixed |
 | 31 | Server emitted `roi: null` + a fabricated trend arrow | Zero-division guarded client-side only | Fixed |
 | 32 | Error panel, stale figures and "Saved." shown at once | `detail` never cleared on fetch failure | Fixed |
+| 33 | `gainLossPercent` arrived as `null` under a `number` type | Portfolio ROI computed inline instead of via `metrics.ts` | Fixed |
+| 34 | `/api/property-details` answered "not found" two ways at random | An undecided contract, not failure injection | Fixed |
+| 35 | "Show cents" governs the summary only; cards never show cents, detail always does | The preference is local state on one route | Fixed |
 
 Bugs 1–20 were found during the planned refactor (steps 1–6 of `AGENDA.md`); 21–28 came out of
 a final full review of the diff, and several of them are follow-ups on items an earlier step had
 explicitly deferred and then never picked up. Bugs 29–32 came out of a full code review of `src/`
 after that (step 8) — notably, three of the four are the *same mistake as the code being
-reviewed*: fixing a symptom where it was visible instead of where it was caused.
+reviewed*: fixing a symptom where it was visible instead of where it was caused. Bugs 33–34 came
+out of a review pass over the finished work (step 9), and 33 is a fourth instance of that same
+mistake: the module written to stop metrics having two definitions was itself bypassed by one.
 
-Findings from that review that are logged but **not** fixed, by decision: the property-list
-effect has no `ignore` flag; `handleFocus` updates `properties` without updating
-`propertiesStatus`; the portfolio error branch is unreachable once the `localStorage` cache has
-hydrated (and that cache has no TTL and a stale `_v1` key); `showCents` isn't passed down to the
-cards; writes don't filter on active rows; and `gainLossPercent` divides unguarded on an empty
-set. All are state-coherence issues rather than wrong numbers on screen.
+Findings still logged but **not** fixed: the property-list effect has no `ignore` flag;
+`handleFocus` updates `properties` without updating `propertiesStatus`; the portfolio error branch
+is unreachable once the `localStorage` cache has hydrated (and that cache has no TTL and a stale
+`_v1` key); and writes don't filter on active rows. All are state-coherence issues rather than
+wrong numbers on screen.
 
 ---
 
@@ -89,9 +93,26 @@ page.tsx:54
 (anonymous)	@	page.tsx:54
 ```
 
-**BY DESIGN:** this is the route's injected failure rate (`Math.random() < 0.15`), not a defect.
-Kept deliberately — it's what makes the resilience work in bugs 3 and 10 reproducible and
-testable. See the trade-offs section of `WRITEUP.md`.
+**BY DESIGN, INITIALLY:** this is the route's injected failure rate (`Math.random() < 0.15`),
+not a defect. I kept it through the refactor because it's what makes the resilience work in bugs
+3 and 10 reproducible.
+
+**FIXED (step 9):** kept, but not unconditionally. Three routes were rolling dice on every
+request (`portfolio-summary` 15%, `properties/list` 10%, `properties/update` 10%), so roughly one
+load in four failed somewhere — in code whose whole claim is that it's production quality. The
+rates now live behind `shouldInjectFailure()` in `src/lib/chaos.ts`, which returns false unless
+`CHAOS=1`. The default install is clean; `CHAOS=1 npm run dev` restores the old behaviour for a
+pass over the failure paths, and `?forceError=1` on the summary route is unchanged and remains
+the deterministic way to see an error state.
+
+Verified by probing each endpoint 20–25 times on both settings: 0 failures out of 10/10/5 on the
+default, and 500s reappearing at roughly the configured rates under `CHAOS=1`.
+
+The same argument applies to the starter's `await wait(1800 + Math.random() * 1200)`, which I had
+simply deleted — with the difference that it was hiding behind "simulate slow network" while
+making every page load feel broken. Deleting it removed the only way to *see* a loading state,
+which I should have said out loud at the time; `CHAOS=1` is now the honest place for it if it
+ever needs to come back.
 
 ## 3.
 Loading "/" with devtools open: if the initial fetch (not the timer's — the one in the first
@@ -744,3 +765,92 @@ Trade-off: a transient blip now costs the user the figures they were reading, ra
 showing them next to a warning. Showing possibly-stale numbers with a clear "couldn't refresh"
 marker would be better UX; that's a bigger change than this fix, and silently-wrong beats
 briefly-empty is the wrong trade in a financial view.
+
+---
+
+## Bugs found reviewing the finished work (step 9)
+
+## 33.
+*[NEW — review of the finished work]* `/api/v1/user/portfolio-summary` computed
+`gainLossPercent: ((totalValue - totalPurchase) / totalPurchase) * 100` inline — the same formula
+as `calculateRoi`, which exists precisely so that no metric has two definitions. It was the one
+metric that never got routed through `src/lib/metrics.ts`.
+
+Two consequences, one latent and one live:
+
+- With no active properties, `totalPurchase` is 0 and the expression is `0/0` → `NaN`.
+  `JSON.stringify` serializes `NaN` as `null`, so the client receives `gainLossPercent: null`
+  under a declared type of `number`. `formatPercent` renders "N/A" and nothing looks wrong on
+  screen, which is exactly why it survived — the type was lying and the UI was covering for it.
+  This is the same shape as bug 31, in the one place bug 31's fix didn't reach.
+- Structurally it's the fourth instance of the mistake steps 7 and 8 were about: the module
+  written to prevent drift was bypassed by the metric it was written for.
+
+**FIXED (step 9):** the route now calls `calculateRoi(totalValue, totalPurchase)`, and
+`Portfolio.gainLossPercent` is `number | null` — the type the wire could always produce. The
+existing `calculateRoi(0, 0) === null` test already covers the empty-portfolio path. Verified
+against the running server: `{"gainLossPercent":6.534090909090909,...}` for the real fixtures,
+matching `(1875000 - 1760000) / 1760000 * 100`, and unchanged rendering on the page.
+
+## 34.
+*[NEW — review of the finished work]* Asked for an id that doesn't exist, `/api/property-details`
+returned a 200 with `{property:null, status:"not_found"}` about 30% of the time and a 404 the
+rest — chosen by `Math.random()`. Inherited from the starter and preserved through the refactor
+because the client had been taught to handle both (bug 14), which is how it stopped looking odd.
+
+But this one is not failure injection: it's an endpoint answering the same question two different
+ways for no reason, and no amount of client tolerance makes that a contract. It also meant the
+404 path could not be tested deterministically.
+
+**FIXED (step 9):** a missing property is now always a 404. The client keeps accepting both
+shapes — that tolerance is now defensive rather than load-bearing, since nothing emits the 200
+form any more. Verified: 5 consecutive requests for `does-not-exist` returned `404 404 404 404
+404`, where the same probe previously mixed in 200s.
+
+## 35.
+*[NEW — reported by Iñigo]* The "Show cents" checkbox governs one third of the screen. With it
+unchecked, the same property renders two different ways one click apart:
+
+```
+Home, summary block:   Total Worth   $1,875,000      <- respects the toggle
+Home, property card:   prop-003      $495,000        <- always without cents
+Detail, prop-003:      Current Value $495,000.00     <- always WITH cents
+```
+
+Verified in the browser at both settings: the summary alternates between `$1,875,000.00` and
+`$1,875,000`, while the card stays `$495,000` and the detail row stays `$495,000.00` throughout.
+
+Three behaviours for one preference, from two different causes. `PropertyCard` hardcodes
+`showCents: false`, which was already logged as knowingly left. The detail page is the part that
+was never noticed: it never receives the preference at all, and `formatMoney` defaults
+`showCents` to `true`, so it opts into the *opposite* of the card it was opened from.
+
+The root cause is not a forgotten prop. `showCents` is `useState` inside the home page's client
+component, and `/property/[id]` is a different route — there is nowhere for a display preference
+to live that both can read. Fixing it properly means lifting it (a context in the layout, backed
+by `localStorage`, or a query param), not threading an argument.
+
+Worth separating from its neighbour: `displayCurrency` also stops at the route boundary, and that
+one **is** deliberate (bug 29) — a EUR property must not be drawn in `$` because home happens to
+be set to dollars, since currency is an attribute of the property. That argument does not carry
+over to cents, which are pure presentation and mean the same thing on every screen.
+
+**FIXED:** `src/lib/displayPreferences.tsx` — a client context mounted in the root layout,
+holding `showCents` and `displayCurrency` and persisted to `localStorage`. Home reads its toolbar
+from it instead of local `useState` and passes `showCents` down to `PropertyCard`; the detail page
+reads `showCents` from it too.
+
+The currency deliberately does **not** cross: the detail page keeps drawing each figure in
+`detail.currency`. The context documents that at the field, since the obvious "improvement" for
+the next reader is to wire `displayCurrency` in there and quietly reintroduce bug 29.
+
+To avoid a hydration mismatch, the provider renders `DEFAULTS` on the server and on the first
+client render, then reads storage in an effect; a second effect persists changes and is guarded
+on a `hydrated` flag, or its first run would write the defaults over the value about to be read.
+
+Verified in the browser in both directions. With cents off, `prop-003` reads `$495,000` in the
+summary, on the card and on the detail page — previously `$495,000` on the card and
+`$495,000.00` one click later. With cents on, all three read `$495,000.00`. The preference
+survives a reload (`{"displayCurrency":"USD","showCents":false}` in `localStorage`, checkbox
+still unchecked). `prop-004` still renders `€240,000 / €267,000` on its detail page with the
+selector on USD, so bug 29 has not regressed. No hydration warning in the console.

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Currency, Portfolio, PropertyListItem } from "@/types/property";
 import { formatMoney, formatPercent } from "@/lib/format";
+import { useDisplayPreferences } from "@/lib/displayPreferences";
 
 interface SummaryStats {
   avgPropertyValue: number;
@@ -15,8 +16,6 @@ type LoadStatus = "loading" | "error" | "ready";
 
 const PORTFOLIO_CACHE_KEY = "portfolio_cache_v1";
 
-// Both callers of each endpoint (initial load + poll, initial load + focus refresh) go
-// through these, so the "throw on !ok" contract lives in exactly one place per endpoint.
 async function fetchPortfolio(): Promise<Portfolio> {
   const response = await fetch("/api/v1/user/portfolio-summary");
   if (!response.ok) throw new Error("portfolio-summary request failed");
@@ -40,11 +39,10 @@ export default function Home() {
   const [propertiesStatus, setPropertiesStatus] = useState<LoadStatus>("loading");
   const [reloadPropertiesToken, setReloadPropertiesToken] = useState(0);
   const [refreshCount, setRefreshCount] = useState(0);
-  const [displayCurrency, setDisplayCurrency] = useState<Currency>("USD");
-  const [showCents, setShowCents] = useState(true);
+  const { displayCurrency, setDisplayCurrency, showCents, setShowCents } =
+    useDisplayPreferences();
 
-  // Load the portfolio summary once on mount: show the cached copy immediately if
-  // there is one, then refresh it from the network.
+  // Cached copy first, then the network.
   useEffect(() => {
     const cached = localStorage.getItem(PORTFOLIO_CACHE_KEY);
     if (cached) {
@@ -68,7 +66,6 @@ export default function Home() {
       });
   }, []);
 
-  // Load the property list once on mount, or again if the user hits "Retry".
   useEffect(() => {
     setPropertiesStatus("loading");
     fetchPropertyList()
@@ -82,8 +79,8 @@ export default function Home() {
       });
   }, [reloadPropertiesToken]);
 
-  // Poll the portfolio summary every 30s. A failed poll just keeps the last known
-  // value on screen and logs - it doesn't flip the page into an error state.
+  // A failed poll deliberately keeps the last known value on screen rather than
+  // flipping the page into an error state.
   useEffect(() => {
     const timer = setInterval(() => {
       fetchPortfolio()
@@ -98,7 +95,6 @@ export default function Home() {
     return () => clearInterval(timer);
   }, []);
 
-  // Refresh the property list whenever the tab regains focus.
   useEffect(() => {
     function handleFocus() {
       fetchPropertyList()
@@ -116,8 +112,8 @@ export default function Home() {
     return {
       avgPropertyValue:
         properties.reduce((sum, p) => sum + p.currentValue, 0) / properties.length,
-      // Counted independently: a property at exactly break-even is in neither bucket,
-      // so these two don't have to add up to properties.length.
+      // A property at exactly break-even is in neither bucket, so these two need not
+      // add up to properties.length.
       propertiesInProfit: properties.filter((p) => netCashflow(p) > 0).length,
       propertiesInLoss: properties.filter((p) => netCashflow(p) < 0).length,
     };
@@ -289,6 +285,7 @@ export default function Home() {
                 key={p.id}
                 property={p}
                 displayCurrency={displayCurrency}
+                showCents={showCents}
                 onClick={() => router.push(`/property/${encodeURIComponent(p.id)}`)}
               />
             ))}
@@ -302,10 +299,11 @@ export default function Home() {
 interface PropertyCardProps {
   property: PropertyListItem;
   displayCurrency: Currency;
+  showCents: boolean;
   onClick: () => void;
 }
 
-function PropertyCard({ property, displayCurrency, onClick }: PropertyCardProps) {
+function PropertyCard({ property, displayCurrency, showCents, onClick }: PropertyCardProps) {
   const netCashflow = property.monthlyIncome - property.monthlyExpenses;
 
   return (
@@ -320,7 +318,7 @@ function PropertyCard({ property, displayCurrency, onClick }: PropertyCardProps)
       </div>
       <div className="shrink-0 text-right">
         <p className="font-semibold text-zinc-900">
-          {formatMoney(property.currentValue, { currency: displayCurrency, showCents: false })}
+          {formatMoney(property.currentValue, { currency: displayCurrency, showCents })}
         </p>
         <p
           className={
@@ -328,7 +326,7 @@ function PropertyCard({ property, displayCurrency, onClick }: PropertyCardProps)
           }
         >
           {netCashflow > 0 ? "+" : ""}
-          {formatMoney(netCashflow, { currency: displayCurrency, showCents: false })}
+          {formatMoney(netCashflow, { currency: displayCurrency, showCents })}
           /mo
         </p>
       </div>

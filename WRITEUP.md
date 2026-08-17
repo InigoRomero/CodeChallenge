@@ -1,10 +1,9 @@
 # Write-up
 
-> **Before you run it:** the API routes carry deliberate failure injection from the starter code,
-> which I kept because it's what makes the failure states testable — `/api/properties/list` fails
-> 10% of the time, `/api/v1/user/portfolio-summary` 15% (so roughly 1 load in 4 shows an error
-> state somewhere), and saving fails 10%. That's the resilience work doing its job, not a broken
-> build. `?forceError=1` on the summary route triggers one on demand.
+> **To see the failure states:** the starter's failure injection is still there, but off by
+> default — `npm run dev` gives you a clean app. `CHAOS=1 npm run dev` restores it (list 10%,
+> summary 15%, save 10%), and `?forceError=1` on the summary route forces one on demand with no
+> restart and no dice. Rationale below.
 
 ## The main problem
 
@@ -48,9 +47,15 @@ over shifting data would have meant redoing it.
   identity-function accessors made redundant by the normalization layer, a `/sqft` figure that was
   really the total price with a unit glued on, and a `"never"` debug hook — 97 net lines out of the
   two page components.
+- **Randomness out of the default path**: three routes rolled dice on every request, so about one
+  load in four failed somewhere — in a codebase whose claim is that it's production quality. The
+  rates moved behind `CHAOS=1` (`src/lib/chaos.ts`) rather than being deleted, because the error
+  states need some way to be exercised. Separately, `/api/property-details` was answering "not
+  found" as a 404 or as a 200 with `{property:null}` *at random*; that one isn't injection, it's
+  an undecided contract, and it's now always a 404.
 - **34 unit tests** over the pure modules, each naming the bug it pins down.
 
-32 bugs, with repro steps and how each fix was verified, are in `BUGS.md`.
+35 bugs, with repro steps and how each fix was verified, are in `BUGS.md`.
 
 ## What reviewing my own work caught
 
@@ -60,8 +65,17 @@ rather than where it was caused. The currency fix reached the home cards but not
 so a EUR property rendered in `$`. The zero-division guard reached the page but not the route.
 The refetch I added to remove a screen-versus-database contradiction opened a new path straight
 back into it. Hence `metrics.ts`: when two places compute the same thing, eventually only one of
-them gets fixed. Six lower-severity findings are logged and deliberately left — state-coherence
-issues, none of which put a wrong number in front of a user.
+them gets fixed.
+
+A last pass over the finished work found a fourth instance — in `metrics.ts` itself, so to speak.
+`gainLossPercent` was still computed inline in its route: the same formula as `calculateRoi`, in
+the one place the module written to prevent exactly that never reached. On an empty portfolio it
+divided by zero, and `JSON.stringify` turns the resulting `NaN` into `null`, so the client got a
+`null` under a declared `number` while the UI quietly rendered "N/A" and hid it. Writing the
+abstraction is evidently not the same as adopting it, and the only reason I found this one is
+that I went looking for the pattern rather than for bugs. Five lower-severity findings are logged
+and deliberately left — state-coherence issues, none of which put a wrong number in front of a
+user.
 
 ## Left alone, and trade-offs
 
@@ -78,6 +92,15 @@ issues, none of which put a wrong number in front of a user.
   neither a restart nor a second instance. Flagged at the mutation site, not solved.
 - **I changed the sort to A→Z.** The original returned `-1` on `a > b`, which reads like a typo
   rather than a decision. Easy to revert.
+- **The artificial latency is gone rather than flagged.** The starter's
+  `await wait(1800 + Math.random() * 1200)` came out early in the refactor and, unlike the failure
+  rates, I didn't put it behind `CHAOS=1`. Consistency would say it belongs there too — it's the
+  only way to *watch* a loading state. I left it out because 3 seconds of fake latency on every
+  request shaped my impression of the app while I was diagnosing it, and I'd rather the next person
+  form theirs on the real thing.
+- **`.gitattributes`, added late.** Four files had gone into the index with CRLF, so
+  `mockProperties.ts` read as 355 changed lines for the 1 that changed. A diff nobody can read is
+  a review nobody can give, which undoes a fair amount of the rest of this.
 - **Verification was runtime-first**: every fix driven in the running app with Playwright,
   including forcing 500s and failed refetches through request interception.
 

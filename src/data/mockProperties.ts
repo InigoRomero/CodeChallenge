@@ -34,7 +34,7 @@ export type RawPropertyRow = {
   activo?: boolean; // true / false - spain system soft-delete flag (different type!)
   metrics?: { annualYield: number } | null;
   analytics?: { trend: { direction: string } } | null;
-  monthlyIncomeOverride?: number; // set via PATCH /api/properties/update, takes precedence over summed transactions
+  monthlyIncomeOverride?: number; // set by PATCH /api/properties/update, wins over summed transactions
 };
 
 export type RawTransactionRow = {

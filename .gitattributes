@@ -1,0 +1,4 @@
+# Normalize line endings so a one-line change doesn't show up as a whole-file rewrite.
+# Without this, files edited on Windows land in the index as CRLF and every diff against
+# them is unreviewable: src/data/mockProperties.ts read as 355 changed lines for 1 real one.
+* text=auto eol=lf

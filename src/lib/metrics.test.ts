@@ -12,9 +12,7 @@ describe("calculateRoi", () => {
     expect(calculateRoi(495000, 510000)).toBeCloseTo(-2.941, 3);
   });
 
-  it("returns null for a zero purchase price instead of Infinity (BUGS.md #31)", () => {
-    // The route used to emit this straight into JSON, where Infinity becomes null and
-    // breaks the `roi: number` contract, and `NaN >= 0` fabricated a "down" trend arrow.
+  it("returns null for a zero purchase price instead of Infinity", () => {
     expect(calculateRoi(112000, 0)).toBeNull();
     expect(calculateRoi(0, 0)).toBeNull();
   });
@@ -39,7 +37,7 @@ describe("calculateNetCashflow", () => {
     expect(calculateNetCashflow(3200, 3700)).toBe(-500);
   });
 
-  it("treats a zero-expense property as zero, not as missing data (BUGS.md #9)", () => {
+  it("treats a zero-expense property as zero, not as missing data", () => {
     expect(calculateNetCashflow(0, 0)).toBe(0);
   });
 

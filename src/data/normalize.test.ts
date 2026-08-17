@@ -7,9 +7,7 @@ import {
   normalizeProperty,
 } from "@/data/normalize";
 
-// These tests pin the decisions the normalization layer makes about the merged
-// US/Spain mock database. Each one corresponds to a bug that was possible before it
-// existed - see BUGS.md for the repros.
+// Pins the decisions the normalization layer makes about the merged US/Spain fixtures.
 
 describe("field synonym resolution", () => {
   it("reads a us-system row", () => {
@@ -57,10 +55,8 @@ describe("field synonym resolution", () => {
 });
 
 describe("transaction summing", () => {
-  it("treats a NaN amount as zero instead of poisoning the total (BUGS.md #4/#9)", () => {
-    // prop-004 has expenses of 780 plus txn-012, whose amount is Number("N/A") -> NaN.
-    // Before this was NaN-safe the sum became NaN, which JSON.stringify turned into
-    // null, which the UI then read as "falsy, use the purchase price instead".
+  it("treats a NaN amount as zero instead of poisoning the total", () => {
+    // prop-004: expenses of 780 plus txn-012, whose amount is Number("N/A") -> NaN.
     const expenses = getMonthlyExpenses({ id: "prop-004" });
     expect(expenses).toBe(780);
     expect(Number.isFinite(expenses)).toBe(true);

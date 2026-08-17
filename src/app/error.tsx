@@ -2,8 +2,8 @@
 
 import { useEffect } from "react";
 
-// Last-resort boundary: the per-fetch error states cover the failures we know about,
-// this one keeps an unexpected render throw from white-screening the whole app.
+// Last resort. The per-fetch error states cover the failures we know about; this one
+// keeps an unexpected render throw from white-screening the app.
 export default function Error({
   error,
   reset,

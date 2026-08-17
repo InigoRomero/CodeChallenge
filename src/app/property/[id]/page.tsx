@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import type { PropertyDetail } from "@/types/property";
 import { formatMoney, formatPercent } from "@/lib/format";
+import { useDisplayPreferences } from "@/lib/displayPreferences";
 import { calculateNetCashflow, calculateRoi } from "@/lib/metrics";
 
 type DetailStatus = "loading" | "not_found" | "error" | "ready";
@@ -11,6 +12,7 @@ type DetailStatus = "loading" | "not_found" | "error" | "ready";
 export default function PropertyDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
+  const { showCents } = useDisplayPreferences();
   const [detail, setDetail] = useState<PropertyDetail | null>(null);
   const [detailStatus, setDetailStatus] = useState<DetailStatus>("loading");
   const [editValue, setEditValue] = useState("");
@@ -21,16 +23,13 @@ export default function PropertyDetailPage() {
   // useParams types catch-all segments as string[]; this route is a single [id] segment.
   const propertyId = Array.isArray(params.id) ? params.id[0] : params.id;
 
-  // Fetch the detail for the current id. `ignore` guards against a stale response
-  // (from a previous id, or from a refetch after saving) landing out of order.
   useEffect(() => {
     let ignore = false;
     setDetailStatus("loading");
 
     fetch(`/api/property-details?property_id=${encodeURIComponent(propertyId)}`)
       .then(async (res) => {
-        // the route returns a 404 OR a 200 with {property:null} for a missing id -
-        // both mean "not found", not "something broke".
+        // A missing id is "not found", not "something broke".
         if (res.status === 404) return { property: null };
         if (!res.ok) throw new Error("property-details request failed");
         return res.json();
@@ -47,9 +46,8 @@ export default function PropertyDetailPage() {
       })
       .catch(() => {
         if (ignore) return;
-        // Drop the stale copy: showing last-known figures next to an error panel (and, after a
-        // failed post-save refetch, next to a green "Saved.") states three contradictory things
-        // at once. See BUGS.md #32.
+        // Drop the stale copy: last-known figures next to an error panel, and after a failed
+        // post-save refetch next to a green "Saved.", contradict each other.
         setDetail(null);
         setDetailStatus("error");
       });
@@ -83,7 +81,7 @@ export default function PropertyDetailPage() {
         setSaveStatus({ ok: true, message: "Saved." });
         setEditValue("");
         setEditIncome("");
-        // Pull the server's version back so the figures above match what was stored.
+        // Pull the server's version back so the figures can't disagree with the database.
         setReloadToken((t) => t + 1);
       } else {
         setSaveStatus({ ok: false, message: body?.reason ?? "Could not save." });
@@ -97,17 +95,14 @@ export default function PropertyDetailPage() {
   const purchasePrice = detail?.purchasePrice ?? 0;
   const currentValue = detail?.currentValue ?? purchasePrice;
 
-  // Same helper the API uses, so the two can't disagree. Null (no purchase price) renders "N/A".
   const roi = calculateRoi(currentValue, purchasePrice);
-
-  // downPayment is not modelled anywhere in the data, so this stays null rather than
-  // rendering a fabricated "NaN%" - see BUGS.md #18.
   const cashOnCash = detail?.downPayment ? ((cashflow * 12) / detail.downPayment) * 100 : null;
 
-  // Every figure on this page belongs to one property, so it's formatted in that property's
-  // own currency. There is no display-currency selector here (unlike home).
+  // Cents are a display preference and follow the user across routes. The currency is not:
+  // every figure here belongs to one property and is drawn in that property's own, so a EUR
+  // property is never rendered in dollars because home happens to be set to them.
   const money = (amount: number | null | undefined) =>
-    formatMoney(amount, { currency: detail?.currency ?? "USD" });
+    formatMoney(amount, { currency: detail?.currency ?? "USD", showCents });
 
   const rows = [
     { label: "Purchase Price", value: purchasePrice },

@@ -5,11 +5,8 @@ interface FormatMoneyOptions {
   showCents?: boolean;
 }
 
-// Single money formatter shared by every page - fixes two bugs at once:
-// - a hardcoded locale ("en-US") instead of relying on navigator.language, which
-//   produced ambiguous output like "$215.000" on es-ES browsers (BUGS.md #6).
-// - one implementation instead of Home/Detail each rolling their own (BUGS.md #5's
-//   root cause was PropertyCard never receiving the currency at all).
+// The locale is pinned rather than the browser's: an es-ES visitor reading "$215.000"
+// cannot tell thousands from cents.
 export function formatMoney(
   amount: number | null | undefined,
   { currency = "USD", showCents = true }: FormatMoneyOptions = {}
@@ -21,7 +18,7 @@ export function formatMoney(
     return `${symbol}${(0).toFixed(digits)}`;
   }
 
-  // The sign goes before the currency symbol ("-$500", not "$-500") - see BUGS.md #21.
+  // "-$500", not "$-500".
   const sign = amount < 0 ? "-" : "";
   return (
     sign +
@@ -33,9 +30,6 @@ export function formatMoney(
   );
 }
 
-// Percentages come from divisions that can legitimately have no answer (a zero
-// purchase price, a metric with no data behind it). "N/A" is the honest render for
-// those - never "NaN%" (BUGS.md #22).
 export function formatPercent(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value)) return "N/A";
   return `${value.toFixed(1)}%`;
