@@ -1,9 +1,8 @@
 # Write-up
 
-> **To see the failure states:** the starter's failure injection is still there, but off by
-> default — `npm run dev` gives you a clean app. `CHAOS=1 npm run dev` restores it (list 10%,
-> summary 15%, save 10%), and `?forceError=1` on the summary route forces one on demand with no
-> restart and no dice. Rationale below.
+> **To see the failure states:** intercept the request. The starter's failure injection is gone
+> (see below), so the way to drive an error state is to fail the call from outside — devtools
+> offline, or request interception, which is how each one was verified.
 
 ## The main problem
 
@@ -47,12 +46,12 @@ over shifting data would have meant redoing it.
   identity-function accessors made redundant by the normalization layer, a `/sqft` figure that was
   really the total price with a unit glued on, and a `"never"` debug hook — 97 net lines out of the
   two page components.
-- **Randomness out of the default path**: three routes rolled dice on every request, so about one
-  load in four failed somewhere — in a codebase whose claim is that it's production quality. The
-  rates moved behind `CHAOS=1` (`src/lib/chaos.ts`) rather than being deleted, because the error
-  states need some way to be exercised. Separately, `/api/property-details` was answering "not
-  found" as a 404 or as a 200 with `{property:null}` *at random*; that one isn't injection, it's
-  an undecided contract, and it's now always a 404.
+- **No randomness left in the API.** Three routes rolled dice on every request, failing about one
+  load in four; a fourth, `/api/property-details`, answered "not found" as a 404 or as a 200 with
+  `{property:null}` *at random*. All of it is gone, along with the `?forceError=1` hook. A
+  deliberate 500 is a testing affordance, and testing affordances belong in the test, not in the
+  route — the error states are driven by intercepting the request instead. The not-found case was
+  never injection in the first place, just an undecided contract; it's now always a 404.
 - **34 unit tests** over the pure modules, each naming the bug it pins down.
 
 35 bugs, with repro steps and how each fix was verified, are in `BUGS.md`.
@@ -92,12 +91,12 @@ user.
   neither a restart nor a second instance. Flagged at the mutation site, not solved.
 - **I changed the sort to A→Z.** The original returned `-1` on `a > b`, which reads like a typo
   rather than a decision. Easy to revert.
-- **The artificial latency is gone rather than flagged.** The starter's
-  `await wait(1800 + Math.random() * 1200)` came out early in the refactor and, unlike the failure
-  rates, I didn't put it behind `CHAOS=1`. Consistency would say it belongs there too — it's the
-  only way to *watch* a loading state. I left it out because 3 seconds of fake latency on every
-  request shaped my impression of the app while I was diagnosing it, and I'd rather the next person
-  form theirs on the real thing.
+- **The starter's simulated failure and latency are deleted, not configurable.** I first kept the
+  failure rates behind an env flag, reasoning that the error states needed some way to be
+  exercised. That was the wrong instinct: it's a test fixture, and keeping a test fixture reachable
+  from production code is the thing itself, only quieter. The same goes for the `?forceError=1`
+  query param and for `await wait(1800 + Math.random() * 1200)`. Failures belong in the test that
+  needs them — every error state here was verified by intercepting the request.
 - **`.gitattributes`, added late.** Four files had gone into the index with CRLF, so
   `mockProperties.ts` read as 355 changed lines for the 1 that changed. A diff nobody can read is
   a review nobody can give, which undoes a fair amount of the rest of this.

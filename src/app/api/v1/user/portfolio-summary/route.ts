@@ -1,20 +1,9 @@
 import { NextResponse } from "next/server";
 import { getActiveProperties } from "@/data/normalize";
-import { shouldInjectFailure } from "@/lib/chaos";
 import { calculateNetCashflow, calculateRoi } from "@/lib/metrics";
 import type { Portfolio } from "@/types/property";
 
-export async function GET(request: Request) {
-  const url = new URL(request.url);
-  const forceError = url.searchParams.get("forceError");
-
-  if (forceError === "1" || shouldInjectFailure(0.15)) {
-    return NextResponse.json(
-      { ok: false, err_msg: "something went wrong on our end sorry!!" },
-      { status: 500 }
-    );
-  }
-
+export async function GET() {
   const properties = getActiveProperties();
 
   // Sums USD and EUR properties as one unit: there is no FX rate source in the data.

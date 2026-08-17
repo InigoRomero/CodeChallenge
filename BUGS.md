@@ -8,7 +8,7 @@ verified.
 | #  | Symptom | Root cause | Status |
 |----|---------|-----------|--------|
 | 1  | Polling crashed the page on a failed request | No `r.ok` check, no `.catch` on the poll | Fixed |
-| 2  | `portfolio-summary` 500s | Injected failure rate, unconditional | Fixed (moved behind `CHAOS=1`) |
+| 2  | `portfolio-summary` 500s | Simulated failure shipped in the route | Fixed (deleted) |
 | 3  | `$NaN` / `NaN%` in Summary after a failed load | No error state; error body has no `data` | Fixed |
 | 4  | `Monthly Cashflow: $NaN` on every successful load | `amount: Number("N/A")` + `??` doesn't catch `NaN` | Fixed |
 | 5  | Currency selector didn't reach property cards | `"$"` hardcoded in `PropertyCard` | Fixed |
@@ -97,22 +97,25 @@ page.tsx:54
 not a defect. I kept it through the refactor because it's what makes the resilience work in bugs
 3 and 10 reproducible.
 
-**FIXED (step 9):** kept, but not unconditionally. Three routes were rolling dice on every
-request (`portfolio-summary` 15%, `properties/list` 10%, `properties/update` 10%), so roughly one
-load in four failed somewhere — in code whose whole claim is that it's production quality. The
-rates now live behind `shouldInjectFailure()` in `src/lib/chaos.ts`, which returns false unless
-`CHAOS=1`. The default install is clean; `CHAOS=1 npm run dev` restores the old behaviour for a
-pass over the failure paths, and `?forceError=1` on the summary route is unchanged and remains
-the deterministic way to see an error state.
+**FIXED (step 9), in two passes.** Three routes were rolling dice on every request
+(`portfolio-summary` 15%, `properties/list` 10%, `properties/update` 10%), so roughly one load in
+four failed somewhere, in code whose whole claim is that it's production quality.
 
-Verified by probing each endpoint 20–25 times on both settings: 0 failures out of 10/10/5 on the
-default, and 500s reappearing at roughly the configured rates under `CHAOS=1`.
+My first fix moved the rates behind a `CHAOS=1` env flag, on the reasoning that deleting them
+would leave the error states with no way to be exercised. That reasoning doesn't survive contact
+with the question "would I merge this?". A simulated failure is a test fixture; leaving a test
+fixture reachable from a production route is the same mistake as shipping it, only quieter, and
+the flag mostly bought me a way to avoid choosing. Real error states are driven by failing the
+call from outside — which is how every one of them was verified here anyway (bug 32 was found by
+monkey-patching `window.fetch`, not by waiting for a dice roll).
 
-The same argument applies to the starter's `await wait(1800 + Math.random() * 1200)`, which I had
-simply deleted — with the difference that it was hiding behind "simulate slow network" while
-making every page load feel broken. Deleting it removed the only way to *see* a loading state,
-which I should have said out loud at the time; `CHAOS=1` is now the honest place for it if it
-ever needs to come back.
+So: deleted. All three rates, `src/lib/chaos.ts`, and the `?forceError=1` query param, which is
+the same thing with a deterministic trigger — an endpoint that returns a 500 because the caller
+asked it to is still an endpoint with a failure hook in it. `src/` now contains no `Math.random()`
+at all. The same argument retroactively covers the starter's
+`await wait(1800 + Math.random() * 1200)`, deleted earlier in the refactor.
+
+Verified: 10 consecutive requests to each of the three endpoints, all 200.
 
 ## 3.
 Loading "/" with devtools open: if the initial fetch (not the timer's — the one in the first

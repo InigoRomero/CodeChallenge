@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { findRawPropertyById } from "@/data/normalize";
-import { shouldInjectFailure } from "@/lib/chaos";
 
 interface UpdatePropertyBody {
   id?: unknown;
@@ -30,10 +29,6 @@ function parseOptionalAmount(raw: unknown): number | undefined | null {
 }
 
 export async function PATCH(request: Request) {
-  if (shouldInjectFailure(0.1)) {
-    return new NextResponse("server error", { status: 500 });
-  }
-
   let body: UpdatePropertyBody;
   try {
     body = (await request.json()) as UpdatePropertyBody;

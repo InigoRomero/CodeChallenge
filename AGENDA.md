@@ -101,10 +101,12 @@ the way in every file touched during steps 1–4, to avoid going over the same g
      `null` on the wire under a `number` type whenever the portfolio was empty.
    - `/api/property-details` was answering "not found" as a 404 or as a 200 with `{property:null}`
      at random. Collapsed to a 404. Client tolerance for both shapes stays, as defence.
-   - The failure injection (`Math.random()` in three routes, ~1 load in 4 failing somewhere) moved
-     behind `CHAOS=1` via `src/lib/chaos.ts`. Keeping it unconditional in code presented as
-     production quality was indefensible; deleting it would have left the loading and error states
-     with no way to exercise them. The flag is the version that survives both objections.
+   - The failure injection (`Math.random()` in three routes, ~1 load in 4 failing somewhere) is
+     deleted, along with the `?forceError=1` hook. I first moved it behind a `CHAOS=1` flag to keep
+     the error states exercisable, and that was wrong: a simulated failure is a test fixture, and a
+     test fixture reachable from a production route is the same mistake made quietly. Error states
+     get driven by intercepting the request, which is how they were verified regardless. `src/` now
+     has no `Math.random()` in it.
 
    Also not a bug but worth the two minutes: added `.gitattributes` (`* text=auto eol=lf`) and
    renormalized. Four files had been committed with CRLF, so `mockProperties.ts` showed up as 355
