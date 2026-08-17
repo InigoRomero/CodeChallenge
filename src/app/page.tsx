@@ -1,155 +1,178 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import type { Currency, Portfolio, PropertyListItem } from "@/types/property";
+import { formatMoney } from "@/lib/formatMoney";
+
+interface SummaryStats {
+  avgPropertyValue: number;
+  propertiesInProfit: number;
+  propertiesInLoss: number;
+}
+
+type LoadStatus = "loading" | "error" | "ready";
 
 export default function Home() {
   const router = useRouter();
 
-  const [portfolio, setPortfolio] = useState<any>(null);
-  const [properties, setProperties] = useState<any>([]);
-  const [selectedProperty, setSelectedProperty] = useState<any>(null);
+  const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  const [portfolioStatus, setPortfolioStatus] = useState<LoadStatus>("loading");
+  const [properties, setProperties] = useState<PropertyListItem[]>([]);
+  const [propertiesStatus, setPropertiesStatus] = useState<LoadStatus>("loading");
+  const [reloadPropertiesToken, setReloadPropertiesToken] = useState(0);
+  const [selectedProperty, setSelectedProperty] = useState<PropertyListItem | null>(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [refreshCount, setRefreshCount] = useState(0);
-  const [err, setErr] = useState<any>(null);
-  const [displayCurrency, setDisplayCurrency] = useState("USD");
+  const [displayCurrency, setDisplayCurrency] = useState<Currency>("USD");
   const [showCents, setShowCents] = useState(true);
 
+  // Load the portfolio summary once on mount: show the cached copy immediately if
+  // there is one, then refresh it from the network.
   useEffect(() => {
     const cached = localStorage.getItem("portfolio_cache_v1");
     if (cached) {
       try {
-        var parsed = JSON.parse(cached);
-        setPortfolio(parsed.data.portfolio);
+        const parsed = JSON.parse(cached);
+        setPortfolio(parsed.portfolio);
       } catch (e) {
         console.log(e);
       }
     }
 
     fetch("/api/v1/user/portfolio-summary")
-      .then((response) => response.json())
+      .then((response) => {
+        if (!response.ok) throw new Error("portfolio-summary request failed");
+        return response.json();
+      })
       .then((json) => {
-        setPortfolio(json.data.portfolio);
+        setPortfolio(json.portfolio);
+        setPortfolioStatus("ready");
         localStorage.setItem("portfolio_cache_v1", JSON.stringify(json));
       })
       .catch((err) => {
-        setErr(err);
+        setPortfolioStatus("error");
         console.log("portfolio fetch failed lol", err);
       });
+  }, []);
 
+  // Load the property list once on mount, or again if the user hits "Retry".
+  useEffect(() => {
+    setPropertiesStatus("loading");
     fetch("/api/properties/list")
-      .then((response) => response.json())
+      .then((response) => {
+        if (!response.ok) throw new Error("properties/list request failed");
+        return response.json();
+      })
       .then((json) => {
         setProperties(json.items);
+        setPropertiesStatus("ready");
       })
       .catch((err) => {
         console.log(err);
+        setPropertiesStatus("error");
       });
+  }, [reloadPropertiesToken]);
 
-    fetch("/api/legacy/portfolio")
-      .then((r) => r.json())
-      .then((d) => console.log("legacy", d));
-
-    const timer = setInterval(function () {
+  // Poll the portfolio summary every 30s. A failed poll just keeps the last known
+  // value on screen and logs - it doesn't flip the page into an error state.
+  useEffect(() => {
+    const timer = setInterval(() => {
       fetch("/api/v1/user/portfolio-summary")
-        .then((r) => r.json())
-        .then((j) => setPortfolio(j.data.portfolio));
-      setRefreshCount(refreshCount + 1);
+        .then((r) => {
+          if (!r.ok) throw new Error("portfolio-summary poll failed");
+          return r.json();
+        })
+        .then((j) => {
+          setPortfolio(j.portfolio);
+          setPortfolioStatus("ready");
+        })
+        .catch((err) => console.log("portfolio poll failed", err));
+      setRefreshCount((c) => c + 1);
     }, 30000);
-
-    window.addEventListener("focus", function () {
-      fetch("/api/properties/list")
-        .then((r) => r.json())
-        .then((j) => setProperties(j.items));
-    });
 
     return () => clearInterval(timer);
   }, []);
 
-  const [summaryStats, setSummaryStats] = useState<any>(null);
-
+  // Refresh the property list whenever the tab regains focus.
   useEffect(() => {
-    if (portfolio && properties.length > 0) {
-      const avgValue =
-        properties.reduce((sum: number, p: any) => sum + (getVal(p) || 0), 0) /
-        properties.length;
-      const positiveCount = properties.filter(
-        (p: any) => (getIncome(p) || 0) - (getExpenses(p) || 0) > 0
-      ).length;
-      setSummaryStats({
-        avgPropertyValue: avgValue,
-        propertiesInProfit: positiveCount,
-        propertiesInLoss: properties.length - positiveCount,
-      });
+    function handleFocus() {
+      fetch("/api/properties/list")
+        .then((r) => {
+          if (!r.ok) throw new Error("properties/list refresh failed");
+          return r.json();
+        })
+        .then((j) => setProperties(j.items))
+        .catch((err) => console.log("properties refresh on focus failed", err));
     }
+
+    window.addEventListener("focus", handleFocus);
+    return () => window.removeEventListener("focus", handleFocus);
+  }, []);
+
+  const summaryStats = useMemo<SummaryStats | null>(() => {
+    if (!portfolio || properties.length === 0) return null;
+    const avgValue =
+      properties.reduce((sum, p) => sum + (getVal(p) || 0), 0) /
+      properties.length;
+    const positiveCount = properties.filter(
+      (p) => (getIncome(p) || 0) - (getExpenses(p) || 0) > 0
+    ).length;
+    return {
+      avgPropertyValue: avgValue,
+      propertiesInProfit: positiveCount,
+      propertiesInLoss: properties.length - positiveCount,
+    };
   }, [portfolio, properties]);
 
-  var totalWorth = portfolio?.total_worth + 0;
-  var totalInvested = portfolio?.total_invested;
-  var monthlyCashflow = portfolio?.monthly_cashflow;
-  var gainPercent = ((totalWorth - totalInvested) / totalInvested) * 100;
+  const totalWorth = Number(portfolio?.totalWorth) + 0;
+  const totalInvested = Number(portfolio?.totalInvested);
+  const monthlyCashflow = portfolio?.monthlyCashflow;
+  const gainPercent = ((totalWorth - totalInvested) / totalInvested) * 100;
 
-  function formatMoney(amount: any) {
-    if (amount == null) return showCents ? "$0.00" : "$0";
-    const symbol = displayCurrency === "EUR" ? "\u20ac" : "$";
-    return showCents
-      ? symbol + Number(amount).toFixed(2)
-      : symbol + Math.round(Number(amount)).toLocaleString();
+  function getPropName(p: PropertyListItem) {
+    return p.name;
   }
 
-  function getPropName(p: any) {
-    if (p.name) return p.name;
-    if (p.title) return p.title;
-    return "Unknown Property";
+  function getAddr(p: PropertyListItem) {
+    return p.address;
   }
 
-  function getAddr(p: any) {
-    if (p.address) {
-      return p.address;
-    } else {
-      if (p.location) {
-        return p.location;
-      } else {
-        return "";
-      }
-    }
+  function getVal(p: PropertyListItem) {
+    return p.currentValue;
   }
 
-  function getVal(p: any) {
-    return p.currentValue || p.market_value || 0;
+  function getIncome(p: PropertyListItem) {
+    return p.monthlyIncome;
   }
 
-  function getIncome(p: any) {
-    return p.monthlyIncome || p.rent_per_month;
+  function getExpenses(p: PropertyListItem) {
+    return p.monthlyExpenses;
   }
 
-  function getExpenses(p: any) {
-    return p.monthlyExpenses || p.costs_per_month || 0;
+  function getId(p: PropertyListItem) {
+    return p.id;
   }
 
-  function getId(p: any) {
-    return p.id || p.propId;
-  }
-
-  function getYield(p: any) {
+  function getYield(p: PropertyListItem) {
     return ((getIncome(p) * 12) / getVal(p)) * 100;
   }
 
-  function getPricePerSqft(p: any) {
-    return getVal(p) / p.squareFeet;
-  }
-
-  function handleClick(p: any) {
+  function handleClick(p: PropertyListItem) {
     setSelectedProperty(p);
     setShowDetailModal(true);
     router.push("/property/" + getId(p));
   }
 
-  properties.sort(function (a: any, b: any) {
-    if (getPropName(a) > getPropName(b)) return -1;
-    if (getPropName(a) < getPropName(b)) return 1;
-    return 0;
-  });
+  const sortedProperties = useMemo(
+    () =>
+      [...properties].sort((a, b) => {
+        if (getPropName(a) > getPropName(b)) return -1;
+        if (getPropName(a) < getPropName(b)) return 1;
+        return 0;
+      }),
+    [properties]
+  );
 
   return (
     <div className="min-h-screen bg-zinc-50">
@@ -163,7 +186,7 @@ export default function Home() {
       </header>
 
       <main className="mx-auto max-w-4xl px-6 py-8">
-        {err == null && properties.length > 0 && (
+        {portfolioStatus === "ready" && propertiesStatus === "ready" && (
           <div className="mb-4 rounded-lg bg-blue-50 px-4 py-2 text-xs text-blue-600">
             Data synced successfully
           </div>
@@ -172,7 +195,7 @@ export default function Home() {
         <div className="mb-4 flex items-center gap-4 text-sm">
           <select
             value={displayCurrency}
-            onChange={(e) => setDisplayCurrency(e.target.value)}
+            onChange={(e) => setDisplayCurrency(e.target.value as Currency)}
             className="rounded border border-zinc-200 px-2 py-1 text-sm"
           >
             <option value="USD">USD ($)</option>
@@ -202,78 +225,108 @@ export default function Home() {
             Summary
           </h3>
 
-          <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-5">
-            <div>
-              <p className="text-xs text-zinc-500">Total Worth</p>
-              <p className="mt-1 text-xl font-semibold text-zinc-900">
-                {formatMoney(totalWorth)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-zinc-500">Total Invested</p>
-              <p className="mt-1 text-xl font-semibold text-zinc-900">
-                {formatMoney(totalInvested)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-zinc-500">Monthly Cashflow</p>
-              <p className="mt-1 text-xl font-semibold text-zinc-900">
-                {formatMoney(monthlyCashflow)}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-zinc-500">Gain / Loss</p>
-              <p className="mt-1 text-xl font-semibold text-zinc-900">
-                {gainPercent.toFixed(1)}%
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-zinc-500">Properties</p>
-              <p className="mt-1 text-xl font-semibold text-zinc-900">
-                {portfolio?.property_count}
-              </p>
-            </div>
-          </div>
+          {portfolio ? (
+            <>
+              <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-5">
+                <div>
+                  <p className="text-xs text-zinc-500">Total Worth</p>
+                  <p className="mt-1 text-xl font-semibold text-zinc-900">
+                    {formatMoney(totalWorth, { currency: displayCurrency, showCents })}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500">Total Invested</p>
+                  <p className="mt-1 text-xl font-semibold text-zinc-900">
+                    {formatMoney(totalInvested, { currency: displayCurrency, showCents })}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500">Monthly Cashflow</p>
+                  <p className="mt-1 text-xl font-semibold text-zinc-900">
+                    {formatMoney(monthlyCashflow, { currency: displayCurrency, showCents })}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500">Gain / Loss</p>
+                  <p className="mt-1 text-xl font-semibold text-zinc-900">
+                    {gainPercent.toFixed(1)}%
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-zinc-500">Properties</p>
+                  <p className="mt-1 text-xl font-semibold text-zinc-900">
+                    {portfolio.propertyCount}
+                  </p>
+                </div>
+              </div>
 
-          {summaryStats && (
-            <div className="mt-4 grid grid-cols-3 gap-4 border-t border-zinc-100 pt-4">
-              <div>
-                <p className="text-xs text-zinc-500">Avg. Property Value</p>
-                <p className="mt-1 text-sm font-medium text-zinc-900">
-                  {formatMoney(summaryStats.avgPropertyValue)}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-zinc-500">In Profit</p>
-                <p className="mt-1 text-sm font-medium text-emerald-600">
-                  {summaryStats.propertiesInProfit}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-zinc-500">In Loss</p>
-                <p className="mt-1 text-sm font-medium text-red-600">
-                  {summaryStats.propertiesInLoss}
-                </p>
-              </div>
-            </div>
+              {summaryStats && (
+                <div className="mt-4 grid grid-cols-3 gap-4 border-t border-zinc-100 pt-4">
+                  <div>
+                    <p className="text-xs text-zinc-500">Avg. Property Value</p>
+                    <p className="mt-1 text-sm font-medium text-zinc-900">
+                      {formatMoney(summaryStats.avgPropertyValue, {
+                        currency: displayCurrency,
+                        showCents,
+                      })}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-zinc-500">In Profit</p>
+                    <p className="mt-1 text-sm font-medium text-emerald-600">
+                      {summaryStats.propertiesInProfit}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-zinc-500">In Loss</p>
+                    <p className="mt-1 text-sm font-medium text-red-600">
+                      {summaryStats.propertiesInLoss}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <p className="mt-4 text-xs text-zinc-300">
+                auto-refresh count: {refreshCount}
+              </p>
+            </>
+          ) : portfolioStatus === "error" ? (
+            <p className="text-sm text-red-600">
+              Couldn&apos;t load your portfolio summary. Try reloading the page.
+            </p>
+          ) : (
+            <p className="text-sm text-zinc-400">Loading summary...</p>
           )}
-
-          <p className="mt-4 text-xs text-zinc-300">
-            auto-refresh count: {refreshCount}
-          </p>
         </section>
 
         <section>
           <h3 className="mb-4 text-lg font-semibold text-zinc-900">
-            Your Properties ({properties.length})
+            Your Properties ({sortedProperties.length})
           </h3>
 
+          {propertiesStatus === "error" && (
+            <div className="mb-4 flex items-center justify-between rounded-lg bg-red-50 px-4 py-2 text-xs text-red-600">
+              <span>Couldn&apos;t load your properties.</span>
+              <button
+                onClick={() => setReloadPropertiesToken((t) => t + 1)}
+                className="font-medium underline underline-offset-2"
+              >
+                Retry
+              </button>
+            </div>
+          )}
+
+          {propertiesStatus === "loading" && properties.length === 0 && (
+            <p className="mb-4 text-sm text-zinc-400">Loading properties...</p>
+          )}
+
           <div className="space-y-3">
-            {properties.map((p: any, i: any) => (
+            {sortedProperties.map((p, i) => (
               <PropertyCard
                 key={i}
                 {...p}
-                isSelected={selectedProperty === p}
+                displayCurrency={displayCurrency}
+                isSelected={selectedProperty?.id === p.id}
                 onClick={() => handleClick(p)}
               />
             ))}
@@ -304,19 +357,25 @@ export default function Home() {
               <div className="flex justify-between">
                 <span className="text-zinc-500">Value</span>
                 <span className="font-medium text-zinc-900">
-                  {formatMoney(getVal(selectedProperty))}
+                  {formatMoney(getVal(selectedProperty), { currency: displayCurrency, showCents })}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-zinc-500">Income</span>
                 <span className="font-medium text-zinc-900">
-                  {formatMoney(getIncome(selectedProperty))}
+                  {formatMoney(getIncome(selectedProperty), {
+                    currency: displayCurrency,
+                    showCents,
+                  })}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-zinc-500">Expenses</span>
                 <span className="font-medium text-zinc-900">
-                  {formatMoney(getExpenses(selectedProperty))}
+                  {formatMoney(getExpenses(selectedProperty), {
+                    currency: displayCurrency,
+                    showCents,
+                  })}
                 </span>
               </div>
               <div className="flex justify-between">
@@ -343,7 +402,19 @@ export default function Home() {
   );
 }
 
-function PropertyCard(props: any) {
+interface PropertyCardProps extends PropertyListItem {
+  displayCurrency: Currency;
+  isSelected: boolean;
+  onClick: () => void;
+  // never provided by the API - no endpoint models square footage. Kept optional so
+  // this stays true to today's (buggy) fallback-to-1 behavior; see BUGS.md new entry.
+  squareFeet?: number;
+}
+
+function PropertyCard(props: PropertyCardProps) {
+  const pricePerSqft = props.currentValue / (props.squareFeet || 1);
+  const netCashflow = props.monthlyIncome - props.monthlyExpenses;
+
   return (
     <div
       onClick={props.onClick}
@@ -355,30 +426,21 @@ function PropertyCard(props: any) {
       }
     >
       <div className="min-w-0 flex-1 pr-4">
-        <p className="truncate font-medium text-zinc-900">
-          {props.name || props.title || "Unknown Property"}
-        </p>
+        <p className="truncate font-medium text-zinc-900">{props.name}</p>
         <p className="mt-0.5 truncate text-sm text-zinc-500">
-          {props.address || props.location || ""}
+          {props.address}
         </p>
         <p className="mt-0.5 truncate text-xs text-zinc-400">
-          $
-          {(
-            (props.currentValue || props.market_value || 0) /
-            (props.squareFeet || 1)
-          ).toLocaleString()}
+          {formatMoney(pricePerSqft, { currency: props.displayCurrency, showCents: false })}
           /sqft
         </p>
       </div>
       <div className="shrink-0 text-right">
         <p className="font-semibold text-zinc-900">
-          ${(props.currentValue || props.market_value || 0).toLocaleString()}
+          {formatMoney(props.currentValue, { currency: props.displayCurrency, showCents: false })}
         </p>
         <p className="mt-0.5 text-sm text-emerald-600">
-          +$
-          {(
-            (props.monthlyIncome || 0) - (props.monthlyExpenses || 0)
-          ).toLocaleString()}
+          +{formatMoney(netCashflow, { currency: props.displayCurrency, showCents: false })}
           /mo
         </p>
       </div>
