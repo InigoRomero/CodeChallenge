@@ -1,36 +1,58 @@
 # CLAUDE.md
 
-Guía de trabajo para este repo. Es el take-home "Code Improvement Challenge" (ver [README.md](README.md)): una app Next.js (PropHero, portfolio de real estate) deliberadamente en mal estado que hay que llevar a calidad de producción en ~3-4h, con un write-up final explicando prioridades y decisiones.
+Working guide for this repo. It's the "Code Improvement Challenge" take-home (see
+[README.md](README.md)): a Next.js app (PropHero, a real-estate portfolio) deliberately left in
+bad shape, to be brought up to production quality in ~3-4h, with a final write-up explaining
+priorities and decisions.
 
-## Dónde está el estado del trabajo
+## Where the state of the work lives
 
-- **[AGENDA.md](AGENDA.md)** — plan y orden de refactor, según se va diagnosticando el código. Es la fuente de verdad del "qué toca ahora".
-- **[BUGS.md](BUGS.md)** — bugs confirmados en runtime (navegador, consola, network), numerados, con repro y causa. Se generó explorando la app real, no solo leyendo código.
+- **[AGENDA.md](AGENDA.md)** — the refactor plan and its order, as the code gets diagnosed. It's
+  the source of truth for "what's next".
+- **[BUGS.md](BUGS.md)** — bugs confirmed at runtime (browser, console, network), numbered, with
+  repro steps and cause. It was produced by exploring the real app, not just by reading code.
 
-Antes de tocar un archivo, mira si AGENDA.md o BUGS.md ya dicen algo sobre él.
+Before touching a file, check whether AGENDA.md or BUGS.md already says something about it.
 
-## Cómo trabajamos el refactor
+## How we work the refactor
 
-1. Seguimos el orden establecido en AGENDA.md (normalizar datos/API → interfaces/tipos → hooks y data-fetching → bugs de lógica que dependían de eso → CSS/estética al final). No saltar fases porque "ya que estamos" salvo el punto 2.
-2. **Mientras se refactoriza un archivo por el motivo planeado, si alguno de los bugs listados en BUGS.md vive en ese mismo archivo y tiene sentido arreglarlo sin desviarse del alcance del paso actual, se arregla ahí mismo** en vez de dejarlo para una pasada aparte. No abrir archivos nuevos solo para cazar bugs de la lista fuera de orden — eso rompe la priorización ya acordada.
-3. `var`→`const/let` y quitar `any` no son fases propias: se limpian sobre la marcha en cada archivo que se toca (evita pasar dos veces por el mismo sitio).
-4. Al arreglar un bug de BUGS.md, marcarlo como resuelto en ese mismo archivo (no se borra la entrada, se anota qué se hizo) para que el write-up final pueda salir directamente de ahí.
-5. Cualquier bug nuevo que aparezca haciendo el refactor (no estaba en la lista) se añade a BUGS.md con el mismo formato que los existentes, no se arregla en silencio sin dejar rastro.
+1. Follow the order set out in AGENDA.md (normalize data/API → interfaces/types → hooks and
+   data-fetching → logic bugs that depended on those → CSS/presentation last). Don't skip phases
+   because "we're already here", except for point 2.
+2. **While refactoring a file for its planned reason, if any of the bugs listed in BUGS.md lives
+   in that same file and can sensibly be fixed without straying from the current step's scope, fix
+   it right there** instead of leaving it for a separate pass. Don't open new files just to hunt
+   bugs from the list out of order — that breaks the agreed prioritization.
+3. `var`→`const/let` and removing `any` aren't phases of their own: they get cleaned up along the
+   way in every file touched (avoids going over the same ground twice).
+4. When fixing a bug from BUGS.md, mark it resolved in that same file (the entry isn't deleted, a
+   note is added about what was done) so the final write-up can be assembled straight from it.
+5. Any new bug found while refactoring (not already on the list) gets added to BUGS.md in the same
+   format as the existing ones — never silently fixed without a trace.
 
-## Reglas de código acordadas
+## Agreed code rules
 
-- Sin `any`. Los tipos salen de las interfaces normalizadas del punto 2 de AGENDA.md.
-- Sin `var`.
-- Un `useEffect` = una responsabilidad. Nada de mezclar fetch + timers + listeners en el mismo efecto.
-- Nunca `useEffect` + `setState` para derivar algo calculable directamente en el render (usar cálculo directo o `useMemo` si hiciera falta).
-- No mutar arrays/objetos de estado directamente (`.sort()`, `.push()` in place) — copiar antes.
-- Todo `addEventListener`/`subscribe` limpia su contraparte en el cleanup del efecto.
-- `setState` basado en el valor anterior usa la forma funcional (`setX(prev => ...)`), sobre todo en timers/callbacks.
-- Fetches dependientes de un id que puede cambiar necesitan cancelación (`AbortController` o flag `ignore`) para evitar condiciones de carrera.
-- Fuera los `window.alert(...)` como feedback de UI (bug de BUGS.md #15 relacionado) — usar estado en pantalla.
-- Capa de normalización de datos (nombres de campo inconsistentes entre endpoints) centralizada, no reimplementada por componente.
+- No `any`. Types come from the normalized interfaces in point 2 of AGENDA.md.
+- No `var`.
+- One `useEffect` = one responsibility. No mixing fetch + timers + listeners in the same effect.
+- Never `useEffect` + `setState` to derive something computable directly during render (use a
+  direct computation, or `useMemo` if needed).
+- Don't mutate state arrays/objects directly (`.sort()`, in-place `.push()`) — copy first.
+- Every `addEventListener`/`subscribe` cleans up its counterpart in the effect's cleanup.
+- `setState` based on the previous value uses the functional form (`setX(prev => ...)`), especially
+  in timers/callbacks.
+- Fetches that depend on an id that can change need cancellation (`AbortController` or an `ignore`
+  flag) to avoid race conditions.
+- No `window.alert(...)` as UI feedback (related to BUGS.md #15) — use on-screen state.
+- The data normalization layer (inconsistent field names across endpoints) is centralized, not
+  reimplemented per component.
 
-## Verificación
+## Verification
 
-- `npm run lint` antes de dar un paso por cerrado (ya incluye `eslint-plugin-react-hooks` vía `next/core-web-vitals`, así que exhaustive-deps debería pillar buena parte de los efectos mal formados).
-- Para bugs de runtime, hay un servidor MCP de Playwright configurado en [.mcp.json](.mcp.json) — se puede navegar la app real para confirmar que un fix efectivamente resuelve lo que decía BUGS.md, no solo que compila.
+- `npm run lint` before calling a step done (it already includes `eslint-plugin-react-hooks` via
+  `next/core-web-vitals`, so exhaustive-deps should catch a good share of malformed effects).
+- `npm run typecheck` (`tsc --noEmit`) and `npm test` (vitest, unit tests over the pure modules:
+  `src/data/normalize.ts` and `src/lib/format.ts`).
+- For runtime bugs, there's a Playwright MCP server configured in [.mcp.json](.mcp.json) — the
+  real app can be navigated to confirm a fix actually resolves what BUGS.md described, not just
+  that it compiles.

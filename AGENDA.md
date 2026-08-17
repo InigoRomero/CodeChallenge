@@ -1,35 +1,96 @@
-Por corregir en orden que voy encontrando:
- - Los datos hay que estandarizar los nombres, tanto usar un case como el idioma.
- - Uso de Var -> Cambiar a let, const
- - Quitar anys
- - css bad practices
- - Código de API tiene errores locos ->   await wait(1800 + Math.random() * 1200); Hay que limpiarlo entero todo.
- - Mal uso de los hooks:
-   - page.tsx:
-     - Un solo useEffect mezclando 4 cosas sin relación: fetch portfolio, fetch properties, fetch legacy (dead code, solo console.log), setInterval de polling, y addEventListener("focus"). Debería partirse en efectos/hooks separados.
-     - Listener "focus" sin cleanup -> memory leak (el return solo limpia el setInterval).
-     - Stale closure en el polling: `setRefreshCount(refreshCount + 1)` dentro del interval siempre parte de 0 capturado, nunca pasa de 1. Fix: forma funcional `setRefreshCount(c => c + 1)`.
-     - `summaryStats` guardado en estado + recalculado en un 2o useEffect, siendo 100% derivable de portfolio/properties -> antipatron "estado derivado via efecto". Debe calcularse directo en el render (o useMemo si hiciera falta).
-     - `properties.sort(...)` muta el array de estado en medio del render (side effect en función que debe ser pura), y se re-ordena en cada render sin memoizar.
-     - useState<any> en portfolio/properties/selectedProperty/err -> anula TS en todo el árbol. Se resuelve solo al crear las interfaces.
-     - selección por referencia de objeto (`selectedProperty === p`) se rompe si properties se vuelve a fetchear (nuevos objetos). Comparar por id.
-     - Funciones normalizadoras (getVal, getIncome, getPropName...) viven dentro del componente pero no dependen de él -> deberían ser una capa de normalización compartida (mismo punto que estandarizar datos).
-     - Sin estados loading/error reales, solo null checks ad hoc.
-   - property/[id]/page.tsx:
-     - Timer de 1s que fuerza re-render entero solo para un contador sin uso ("dont ask why this exists" en el propio código). Eliminar.
-     - Fetch condicional (`if propertyId == "never"`) dentro del mismo efecto -> condición de carrera real, el que resuelva último pisa al otro con setDetail.
-     - Sin cancelación al cambiar propertyId (falta AbortController / flag `ignore` en el cleanup) -> respuesta tardía de un id anterior puede pisar datos del id nuevo.
-     - `detail && detail.stats.trend.direction` no cubre detail.stats ni detail.stats.trend undefined -> puede reventar en render con datos "sucios" de la API.
-     - roi usa `detail?.purchasePrice` pero el resto de la página usa `detail?.purchase` -> posible bug de naming, no solo de hooks.
-   - Recomendaciones generales: sacar el fetching de los componentes a custom hooks (usePortfolio, useProperties, usePropertyDetail) o librería de server-state (React Query/SWR); nunca useEffect+setState para derivar algo calculable en el render; todo addEventListener/subscribe limpia su contraparte; setState basado en valor previo usa forma funcional (sobre todo en timers/callbacks); no mutar arrays/objetos de estado directamente; un efecto = una responsabilidad; activar/revisar exhaustive-deps (ya está eslint-plugin-react-hooks vía next/core-web-vitals, correr `npm run lint`).
+# Refactor plan
 
-   - quitar alertas de ventana
+Problems to fix, in the order I found them while reading the code:
 
- Orden:
- 1. Vamos a priorizar el estandarizar toda la entrada de datos. Vamos a estandarizar tantos el casing como el naming y arrelgar la carpeta de API entera, para primero entender con los datos con los que tenemos que trabajar.
- 2. Crear intefaces para entender con que objetos trabajamos en cada sitio.
- 3. Refactor de hooks/data-fetching en los componentes ya con datos tipados: partir el useEffect gigante, arreglar el memory leak del listener, la stale closure del polling, la condición de carrera en property detail, eliminar el useEffect+setState derivado.
- 4. Bugs de lógica que dependían de eso: mismatch purchase/purchasePrice, guard incompleto de detail.stats.trend, comparación de selección por id en vez de referencia.
- 5. CSS / estética al final, no afecta corrección ni resiliencia.
+- **Data**: field names need standardizing — both the casing and the language.
+- `var` → `let`/`const`.
+- Remove `any`.
+- CSS bad practices.
+- The API code has some wild stuff in it (`await wait(1800 + Math.random() * 1200);`). Needs a
+  full clean-up.
+- **Hooks misuse:**
+  - `page.tsx`:
+    - A single `useEffect` mixing four unrelated things: fetch portfolio, fetch properties, fetch
+      legacy (dead code, only `console.log`s), a polling `setInterval`, and an
+      `addEventListener("focus")`. Should be split into separate effects/hooks.
+    - The "focus" listener has no cleanup → memory leak (the return only clears the
+      `setInterval`).
+    - Stale closure in the polling: `setRefreshCount(refreshCount + 1)` inside the interval always
+      starts from the captured 0, so it never gets past 1. Fix: functional form,
+      `setRefreshCount(c => c + 1)`.
+    - `summaryStats` is stored in state and recomputed in a second `useEffect`, while being 100%
+      derivable from `portfolio`/`properties` → the "derived state via effect" anti-pattern. It
+      should be computed directly during render (or with `useMemo` if needed).
+    - `properties.sort(...)` mutates the state array mid-render (a side effect in what must be a
+      pure function), and re-sorts on every render with no memoization.
+    - `useState<any>` on portfolio/properties/selectedProperty/err → defeats TS across the whole
+      tree. Resolves itself once the interfaces exist.
+    - Selection by object reference (`selectedProperty === p`) breaks as soon as `properties` is
+      refetched (new objects). Compare by id.
+    - The normalizer functions (`getVal`, `getIncome`, `getPropName`...) live inside the component
+      but don't depend on it → they should be a shared normalization layer (same point as
+      standardizing the data).
+    - No real loading/error states, just ad-hoc null checks.
+  - `property/[id]/page.tsx`:
+    - A 1s timer forcing a full re-render just for an unused counter ("dont ask why this exists"
+      in the code itself). Remove.
+    - A conditional fetch (`if propertyId == "never"`) inside the same effect → a real race
+      condition, whichever resolves last overwrites the other via `setDetail`.
+    - No cancellation when `propertyId` changes (missing `AbortController` / `ignore` flag in the
+      cleanup) → a late response for a previous id can overwrite the new id's data.
+    - `detail && detail.stats.trend.direction` doesn't cover `detail.stats` or
+      `detail.stats.trend` being undefined → can blow up during render with "dirty" API data.
+    - `roi` uses `detail?.purchasePrice` but the rest of the page uses `detail?.purchase` →
+      possibly a naming bug, not just a hooks one.
+  - **General recommendations:** move fetching out of the components into custom hooks
+    (`usePortfolio`, `useProperties`, `usePropertyDetail`) or a server-state library
+    (React Query/SWR); never `useEffect`+`setState` to derive something computable during render;
+    every `addEventListener`/`subscribe` cleans up its counterpart; `setState` based on the
+    previous value uses the functional form (especially in timers/callbacks); don't mutate state
+    arrays/objects directly; one effect = one responsibility; enable/review `exhaustive-deps`
+    (`eslint-plugin-react-hooks` is already there via `next/core-web-vitals`, so run
+    `npm run lint`).
+- Remove the `window.alert`s.
 
- Nota: var -> const/let y quitar anys no son una fase aparte, se limpian sobre la marcha en cada archivo que se toca en los pasos 1-4, para no pasar dos veces por el mismo sitio.
+## Order
+
+1. Standardize the whole data intake first. Standardize both casing and naming, and fix the
+   entire API folder, so we first understand the data we have to work with.
+2. Create interfaces, so we know what objects we're dealing with in each place.
+3. Refactor hooks/data-fetching in the components, now that the data is typed: split the giant
+   `useEffect`, fix the listener memory leak, the polling stale closure, the property-detail race
+   condition, and remove the derived `useEffect`+`setState`.
+4. The logic bugs that depended on the above: the purchase/purchasePrice mismatch, the incomplete
+   `detail.stats.trend` guard, comparing selection by id instead of by reference.
+5. CSS / presentation last — it affects neither correctness nor resilience.
+
+Note: `var` → `const`/`let` and removing `any` aren't a separate phase; they get cleaned up along
+the way in every file touched during steps 1–4, to avoid going over the same ground twice.
+
+6. Resilience: real loading/error/not_found states across the three main fetches.
+
+7. Final review: full review of the diff against main, cross-checking the code against `BUGS.md`.
+   This is where bugs 21–28 came from, including two that an earlier step had explicitly left
+   "for step 4" and never picked back up (the Net Cashflow fallback and the "never" branch).
+   It also closed out what was left from this file's general recommendations: dead code removed
+   (unreachable modal, identity accessors, `getYield`), validation on the write endpoint, an error
+   boundary, and unit tests over the two pure pieces (`normalize.ts` and the formatters).
+
+   What was NOT done from the recommendation list, and why: moving data-fetching out into custom
+   hooks / React Query. The three duplicated call sites were collapsed into one function per
+   endpoint, which is the precursor, but migrating to server components or a server-state library
+   is an architecture change rather than a refactor — reasoning in `WRITEUP.md`.
+
+8. Code review of all of `src/`, not just the diff. Produced bugs 29–32, of which three are the
+   same mistake the review was looking for in the original code: a symptom fixed where it showed
+   up rather than where it was caused (the currency reached the home cards but not the detail
+   page; the zero-division guard reached the page but not the route; the refetch added in bug 28
+   opened a new path into the contradiction bug 28 existed to remove). The structural answer was
+   `src/lib/metrics.ts` — one definition of each financial metric, shared by route and page, so
+   the two can't drift apart again.
+
+   Six further findings are logged in `BUGS.md` and deliberately left: they're state-coherence
+   issues (missing `ignore` flag on the list effect, `handleFocus` not updating status, the
+   unreachable portfolio error branch behind the untimed cache, `showCents` not threaded to the
+   cards, writes not filtering active rows, unguarded division on an empty set) rather than wrong
+   numbers on screen.

@@ -32,6 +32,9 @@ export interface PropertyDetail {
   id: string;
   name: string;
   address: string;
+  // The property's own currency, not a display preference - a EUR property must not be
+  // rendered with a "$" just because the detail page has no currency selector (BUGS.md #29).
+  currency: Currency;
   purchasePrice: number;
   currentValue: number;
   monthlyIncome: number;

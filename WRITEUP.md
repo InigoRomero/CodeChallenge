@@ -1,96 +1,92 @@
 # Write-up
 
-## Main problems found
+> **Before you run it:** the API routes carry deliberate failure injection from the starter code,
+> which I kept because it's what makes the failure states testable — `/api/properties/list` fails
+> 10% of the time, `/api/v1/user/portfolio-summary` 15% (so roughly 1 load in 4 shows an error
+> state somewhere), and saving fails 10%. That's the resilience work doing its job, not a broken
+> build. `?forceError=1` on the summary route triggers one on demand.
 
-The codebase had five problem layers, roughly independent of each other:
+## The main problem
 
-1. **Inconsistent data.** The mock "database" merges a US and a Spain system that never got
-   reconciled (`id`/`property_id`, `currentValue`/`valor_actual`, `owner_id`/`propietario_id`,
-   `type`/`tipo`...). Every API route re-implemented its own `??` chain to resolve these, each
-   one slightly differently — some checked the Spain-system foreign keys, some didn't. A single
-   malformed transaction (`amount: Number("N/A")`) turned into `NaN`, which `JSON.stringify`
-   silently turns into `null`, which downstream code treated as "falsy → use this other fallback
-   instead" — producing plausible-looking but completely wrong numbers (Net Cashflow of
-   `-238100` for a property with a 240k expense-free month).
-2. **No types.** `useState<any>` everywhere meant nothing caught the shape drift between
-   endpoints (e.g. `purchase` vs `purchasePrice` used inconsistently in the same file).
-3. **Hooks misuse.** One `useEffect` in `page.tsx` mixed four unrelated concerns (two fetches,
-   a poll, a focus listener with no cleanup — a real memory leak). Two separate stale-closure
-   counters. A derived value (`summaryStats`) computed via `useEffect`+`setState` instead of
-   directly. A genuine race condition in the property-detail fetch (two competing writes to the
-   same state, no cancellation on id change).
-4. **Logic bugs downstream of the above.** Home and Detail showed different values for the same
-   property's "Current Value" (a `??` fallback in the wrong order). `/property/never` crashed
-   100% of the time on an incomplete null-check. Selecting a card compared object references,
-   which breaks the moment the list refetches.
-5. **No resilience.** Every failure mode (a 500, a 404, a missing field) either corrupted the UI
-   silently (`$NaN`, `NaN%`) or left it stuck on "Loading..." forever, with no visible error and
-   no way to retry.
+Five independent layers were broken: inconsistent data (a US and a Spanish schema merged without
+reconciliation — `id`/`property_id`, `currentValue`/`valor_actual` — resolved by a slightly
+different `??` chain in every route); `any` everywhere; hooks misuse (one `useEffect` mixing two
+fetches, a poll and a leaking focus listener, two stale-closure counters, derived state via
+effect, a real race in the detail fetch); logic bugs downstream of those; and no loading or error
+states at all.
+
+Underneath all five was one recurring *class* of bug, and it's the one that matters: **the app
+preferred a confident wrong number to an honest empty state.** One malformed transaction
+(`amount: Number("N/A")`) became `NaN`, which `JSON.stringify` turns into `null`, which
+downstream code read as "falsy → use this other field instead" — rendering a Net Cashflow of
+`-$238,100` where the true answer was `$1,120`. Nothing looked broken. Almost every fix below is
+really the same fix: make absence representable, then render it as absence.
 
 ## How I prioritized
 
-Fixed the data layer first, then types, then hooks, then the logic bugs that depended on
-consistent naming, then formatting, then resilience — in that order, because each layer's
-correctness assumes the one before it: you can't usefully type against field names that don't
-exist consistently yet; you can't cleanly split a `useEffect` around data whose shape you don't
-trust; the ROI/"Current Value" bugs were only cleanly fixable once `purchase` vs
-`purchasePrice` stopped being two different things in the same file. Resilience (loading/error
-states) came last on purpose — it's the layer users notice first, but building it on top of
-still-shifting data/hooks would have meant redoing it.
+Data → types → hooks → logic → formatting → resilience, because each layer's correctness assumes
+the one before it. You can't type against field names that aren't consistent yet, or cleanly
+split an effect around data whose shape you don't trust; the ROI and "Current Value" bugs were
+only cleanly fixable once `purchase` and `purchasePrice` stopped being two different things in
+the same file. Resilience came last on purpose — it's what users notice first, but building it
+over shifting data would have meant redoing it.
 
-## What changed and why
+## What changed
 
-- **Data**: centralized all field-synonym resolution, active-record filtering, and
-  NaN-safe transaction summing into `src/data/normalize.ts`, used by every route instead of each
-  one re-implementing it. Fixed the PATCH "last field wins" bug (income was overwriting
-  `currentValue`) by giving it its own field, plus server-side numeric validation.
-- **Types**: `src/types/property.ts` defines the shapes every endpoint actually returns; removed
-  every `any` in the two page components.
-- **Hooks**: split the giant effect into one-responsibility effects, fixed the focus-listener
-  leak, fixed both stale-closure counters (functional `setState`), replaced the derived-state
-  effect with `useMemo`, and turned the property-detail race into an `if/else` with an `ignore`
-  flag for stale responses.
-- **Logic**: fixed the `Current Value` field-priority bug, the incomplete `.stats` guard (which,
-  it turns out, also crashed on any property with `analytics: null`, not just the documented
-  `/property/never` case), and switched card selection to compare by `id`.
-- **Formatting**: one shared `formatMoney` used everywhere — fixes the currency selector not
-  reaching property cards, and forces a fixed locale instead of trusting the browser's.
-- **Resilience**: real `loading | error | ready` (and `not_found`) states for the three main
-  fetches, with visible messages and a working Retry button, replacing silent `$NaN` / infinite
-  spinners.
+- **One normalization layer** (`src/data/normalize.ts`): field-synonym resolution, soft-delete
+  filtering and NaN-safe transaction summing, replacing five divergent copies.
+- **Real types** for what each endpoint returns. No `any`, no casts of untrusted input.
+- **Hooks**: one responsibility per effect, listener leak fixed, functional `setState` in timers,
+  derived state via `useMemo`, the detail race collapsed into a single cancellable fetch.
+- **One definition per metric** (`src/lib/format.ts`, `src/lib/metrics.ts`). Money, percentages,
+  ROI and net cashflow were each computed in two places — which is how the API ended up emitting
+  `Infinity` for a case the page already guarded against.
+- **Resilience**: `loading | error | ready | not_found` states with visible messages and a working
+  Retry; an `error.tsx` boundary; validation on the write endpoint (400 with a reason the UI shows,
+  404 for unknown ids); and a refetch after saving, so the screen can't disagree with the database.
+- **Deletions**: an unreachable modal (it opened a modal *and* navigated away in the same handler),
+  identity-function accessors made redundant by the normalization layer, a `/sqft` figure that was
+  really the total price with a unit glued on, and a `"never"` debug hook — 97 net lines out of the
+  two page components.
+- **34 unit tests** over the pure modules, each naming the bug it pins down.
 
-Full bug-by-bug detail, with repro steps and verification, is in `BUGS.md`.
+32 bugs, with repro steps and how each fix was verified, are in `BUGS.md`.
 
-## What I deliberately left alone
+## What reviewing my own work caught
 
-- **Currency conversion.** The USD/EUR selector only swaps the symbol — it doesn't convert the
-  number, and neither did the original code. There's no FX rate source anywhere in the data, so
-  building one felt like a bigger product decision than this pass should make unilaterally.
-- **Cash-on-Cash Return** is permanently `NaN%` — it depends on a `downPayment` concept that
-  doesn't exist anywhere in the data model, not a naming bug I could normalize away.
-- **`squareFeet`** (the "$xxx/sqft" line on property cards) is never populated by any endpoint;
-  it silently falls back to showing the total price again. Same story as above — no data to fix
-  it with.
-- **The `propertyId === "never"` branch** in the detail page is an obvious debug/test hook (no
-  real id will ever be `"never"`), not a feature. I fixed the crash it used to cause but didn't
-  remove the hook itself, since deleting it wasn't asked for by any of the planned steps.
-- **Client-side form validation** on Quick Edit. The server now rejects non-numeric input with a
-  clear reason, and the UI shows it — but the input field itself doesn't validate before
-  submitting.
-- A few dead-code nits (`getYield`, an unused CSS variable, string-concatenated conditional
-  classNames) — flagged during review, not touched, because they have zero observable effect.
+Afterwards I reviewed all of `src/`, not just my diff. Four more fixes came out of it — and three
+were **the same mistake I'd spent the day criticising**: a symptom fixed where it was visible
+rather than where it was caused. The currency fix reached the home cards but not the detail page,
+so a EUR property rendered in `$`. The zero-division guard reached the page but not the route.
+The refetch I added to remove a screen-versus-database contradiction opened a new path straight
+back into it. Hence `metrics.ts`: when two places compute the same thing, eventually only one of
+them gets fixed. Six lower-severity findings are logged and deliberately left — state-coherence
+issues, none of which put a wrong number in front of a user.
 
-## Trade-offs / assumptions
+## Left alone, and trade-offs
 
-- Kept the API routes' random failure rates (10%/15%/30%) untouched — they're what makes the
-  resilience bugs reproducible and testable. I *did* remove the artificial network latency
-  (400ms–3s, inconsistent per route) after checking the original code: only one of five routes
-  even commented on why it was there, and that comment was sarcastic ("real users have slow
-  wifi right??") — it read as filler cruft, not a deliberate testing surface, and `AGENDA.md`'s
-  own diagnosis had already flagged it for full cleanup.
-- Money values are still not converted between currencies and portfolio totals still sum EUR and
-  USD properties as if they were the same unit — a real limitation, not something formatting
-  could paper over.
-- Every fix was verified against the running app (via Playwright — including forcing failures
-  through route interception to check the loading/error states, not just reloading and hoping
-  for the random case) and `tsc --noEmit`/`next lint`, not just read for plausibility.
+- **No currency conversion.** The selector swaps the symbol only, as before. There's no FX source
+  in the data, so portfolio totals still sum EUR and USD as one unit — a real limitation, not
+  something formatting could paper over.
+- **Cash-on-Cash and `/sqft`** depend on `downPayment` and `squareFeet`, which no endpoint models.
+  I stopped them printing `NaN%` and a fabricated number; inventing the data is a product call.
+- **Fetching stayed client-side.** Server components (or React Query) is the right answer, but the
+  poll, focus-refresh and currency toggle all assume a client component — an architecture change
+  rather than a refactor, and it would have eaten the budget. I collapsed the three duplicated call
+  sites into one function per endpoint, so the migration is mechanical when it happens.
+- **The mock database is still an in-memory singleton** the PATCH route mutates: writes survive
+  neither a restart nor a second instance. Flagged at the mutation site, not solved.
+- **I changed the sort to A→Z.** The original returned `-1` on `a > b`, which reads like a typo
+  rather than a decision. Easy to revert.
+- **Verification was runtime-first**: every fix driven in the running app with Playwright,
+  including forcing 500s and failed refetches through request interception.
+
+## On AI usage
+
+Claude Code, with the leverage in the setup rather than the prompting: a `CLAUDE.md` holding the
+rules I actually wanted enforced, `AGENDA.md` and `BUGS.md` as working state under a rule that
+findings get logged rather than silently patched, and the Playwright MCP for diagnosis. That last
+one mattered most — the worst bugs here (`$NaN`, `-$95,000`, `+$-500` rendered in green) are
+invisible in a page of source and obvious on the page itself. The deferred-then-forgotten cashflow
+fallback was caught by re-reading my own diff against the log, which is the habit I'd keep
+regardless of tooling.

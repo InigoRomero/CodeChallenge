@@ -1,88 +1,120 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import type { PropertyDetail } from "@/types/property";
-import { formatMoney } from "@/lib/formatMoney";
+import { formatMoney, formatPercent } from "@/lib/format";
+import { calculateNetCashflow, calculateRoi } from "@/lib/metrics";
 
 type DetailStatus = "loading" | "not_found" | "error" | "ready";
 
 export default function PropertyDetailPage() {
-  const params = useParams();
+  const params = useParams<{ id: string }>();
   const router = useRouter();
   const [detail, setDetail] = useState<PropertyDetail | null>(null);
   const [detailStatus, setDetailStatus] = useState<DetailStatus>("loading");
   const [editValue, setEditValue] = useState("");
   const [editIncome, setEditIncome] = useState("");
   const [saveStatus, setSaveStatus] = useState<{ ok: boolean; message: string } | null>(null);
+  const [reloadToken, setReloadToken] = useState(0);
 
-  const propertyId = params.id;
+  // useParams types catch-all segments as string[]; this route is a single [id] segment.
+  const propertyId = Array.isArray(params.id) ? params.id[0] : params.id;
 
   // Fetch the detail for the current id. `ignore` guards against a stale response
-  // (from a previous id) landing after the id has already changed again.
+  // (from a previous id, or from a refetch after saving) landing out of order.
   useEffect(() => {
     let ignore = false;
     setDetailStatus("loading");
 
-    if (propertyId === "never") {
-      // legacy/portfolio returns a completely different shape (uuid/label/addr/boughtFor/worth,
-      // no .stats) - this cast preserves the existing shape mismatch, see BUGS.md #11.
-      fetch("/api/legacy/portfolio")
-        .then((r) => r.json())
-        .then((d) => {
-          if (ignore) return;
-          setDetail(d.result.assets[0] as PropertyDetail);
+    fetch(`/api/property-details?property_id=${encodeURIComponent(propertyId)}`)
+      .then(async (res) => {
+        // the route returns a 404 OR a 200 with {property:null} for a missing id -
+        // both mean "not found", not "something broke".
+        if (res.status === 404) return { property: null };
+        if (!res.ok) throw new Error("property-details request failed");
+        return res.json();
+      })
+      .then((data) => {
+        if (ignore) return;
+        if (!data.property) {
+          setDetail(null);
+          setDetailStatus("not_found");
+        } else {
+          setDetail(data.property);
           setDetailStatus("ready");
-        })
-        .catch(() => {
-          if (!ignore) setDetailStatus("error");
-        });
-    } else {
-      fetch("/api/property-details?property_id=" + propertyId)
-        .then(async (res) => {
-          // the route returns a 404 OR a 200 with {property:null} for a missing id -
-          // both mean "not found", not "something broke".
-          if (res.status === 404) return { property: null };
-          if (!res.ok) throw new Error("property-details request failed");
-          return res.json();
-        })
-        .then((data) => {
-          if (ignore) return;
-          if (!data.property) {
-            setDetail(null);
-            setDetailStatus("not_found");
-          } else {
-            setDetail(data.property);
-            setDetailStatus("ready");
-          }
-        })
-        .catch(() => {
-          if (!ignore) setDetailStatus("error");
-        });
-    }
+        }
+      })
+      .catch(() => {
+        if (ignore) return;
+        // Drop the stale copy: showing last-known figures next to an error panel (and, after a
+        // failed post-save refetch, next to a green "Saved.") states three contradictory things
+        // at once. See BUGS.md #32.
+        setDetail(null);
+        setDetailStatus("error");
+      });
 
     return () => {
       ignore = true;
     };
-  }, [propertyId]);
+  }, [propertyId, reloadToken]);
 
-  const headerValue = Number(detail?.currentValue ?? detail?.purchasePrice);
-  const cashflow =
-    (detail?.monthlyIncome || 0) - (detail?.monthlyExpenses || detail?.purchasePrice || 0);
+  const handleSave = useCallback(async () => {
+    setSaveStatus(null);
 
-  const roi =
-    ((headerValue - Number(detail?.purchasePrice)) / Number(detail?.purchasePrice)) * 100;
+    const updates: { id: string; value?: string; income?: string } = { id: propertyId };
+    if (editValue) updates.value = editValue;
+    if (editIncome) updates.income = editIncome;
 
-  const cashOnCash = ((cashflow * 12) / Number(detail?.downPayment)) * 100;
+    if (updates.value === undefined && updates.income === undefined) {
+      setSaveStatus({ ok: false, message: "Nothing to save - fill in a field first." });
+      return;
+    }
+
+    try {
+      const res = await fetch("/api/properties/update", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      const body = await res.json().catch(() => null);
+
+      if (res.ok && body?.ok) {
+        setSaveStatus({ ok: true, message: "Saved." });
+        setEditValue("");
+        setEditIncome("");
+        // Pull the server's version back so the figures above match what was stored.
+        setReloadToken((t) => t + 1);
+      } else {
+        setSaveStatus({ ok: false, message: body?.reason ?? "Could not save." });
+      }
+    } catch {
+      setSaveStatus({ ok: false, message: "Could not save." });
+    }
+  }, [propertyId, editValue, editIncome]);
+
+  const cashflow = calculateNetCashflow(detail?.monthlyIncome ?? 0, detail?.monthlyExpenses ?? 0);
+  const purchasePrice = detail?.purchasePrice ?? 0;
+  const currentValue = detail?.currentValue ?? purchasePrice;
+
+  // Same helper the API uses, so the two can't disagree. Null (no purchase price) renders "N/A".
+  const roi = calculateRoi(currentValue, purchasePrice);
+
+  // downPayment is not modelled anywhere in the data, so this stays null rather than
+  // rendering a fabricated "NaN%" - see BUGS.md #18.
+  const cashOnCash = detail?.downPayment ? ((cashflow * 12) / detail.downPayment) * 100 : null;
+
+  // Every figure on this page belongs to one property, so it's formatted in that property's
+  // own currency. There is no display-currency selector here (unlike home).
+  const money = (amount: number | null | undefined) =>
+    formatMoney(amount, { currency: detail?.currency ?? "USD" });
 
   const rows = [
-    { label: "Purchase Price", value: detail?.purchasePrice },
-    { label: "Current Value", value: headerValue },
+    { label: "Purchase Price", value: purchasePrice },
+    { label: "Current Value", value: currentValue },
     { label: "Monthly Income", value: detail?.monthlyIncome },
     { label: "Monthly Expenses", value: detail?.monthlyExpenses },
   ];
-
-  const ownerRow = { label: "Owner", value: detail?.ownerName };
 
   const trendDirection = detail?.stats?.trend.direction ?? null;
 
@@ -111,7 +143,7 @@ export default function PropertyDetailPage() {
           {detail && (
             <>
               <p className="mt-1 text-sm text-zinc-500">{detail.address}</p>
-              <p className="mt-1 text-sm text-zinc-400">Owner: {ownerRow.value}</p>
+              <p className="mt-1 text-sm text-zinc-400">Owner: {detail.ownerName}</p>
               <p className="mt-1 text-xs text-zinc-400">
                 12mo trend:{" "}
                 {trendDirection === "up" ? "↑" : trendDirection === "down" ? "↓" : "N/A"}
@@ -154,15 +186,13 @@ export default function PropertyDetailPage() {
               </div>
 
               <div className="divide-y divide-zinc-100">
-                {rows.map((row, idx) => (
+                {rows.map((row) => (
                   <div
-                    key={idx}
+                    key={row.label}
                     className="flex items-center justify-between px-6 py-4 text-sm"
                   >
                     <span className="text-zinc-500">{row.label}</span>
-                    <span className="font-medium text-zinc-900">
-                      {formatMoney(row.value)}
-                    </span>
+                    <span className="font-medium text-zinc-900">{money(row.value)}</span>
                   </div>
                 ))}
 
@@ -171,23 +201,19 @@ export default function PropertyDetailPage() {
                   <span
                     className={
                       "font-semibold " +
-                      (cashflow > 0 ? "text-emerald-600" : "text-red-600")
+                      (cashflow < 0 ? "text-red-600" : "text-emerald-600")
                     }
                   >
-                    {formatMoney(cashflow)}
+                    {money(cashflow)}
                   </span>
                 </div>
                 <div className="flex items-center justify-between px-6 py-4 text-sm">
                   <span className="text-zinc-500">ROI</span>
-                  <span className="font-medium text-zinc-900">
-                    {roi.toFixed(1)}%
-                  </span>
+                  <span className="font-medium text-zinc-900">{formatPercent(roi)}</span>
                 </div>
                 <div className="flex items-center justify-between px-6 py-4 text-sm">
                   <span className="text-zinc-500">Cash-on-Cash Return</span>
-                  <span className="font-medium text-zinc-900">
-                    {cashOnCash.toFixed(1)}%
-                  </span>
+                  <span className="font-medium text-zinc-900">{formatPercent(cashOnCash)}</span>
                 </div>
               </div>
             </section>
@@ -199,9 +225,13 @@ export default function PropertyDetailPage() {
 
               <div className="space-y-3">
                 <div>
-                  <label className="text-xs text-zinc-500">Current Value</label>
+                  <label htmlFor="edit-value" className="text-xs text-zinc-500">
+                    Current Value
+                  </label>
                   <input
-                    type="text"
+                    id="edit-value"
+                    type="number"
+                    inputMode="decimal"
                     placeholder="e.g. 250000"
                     value={editValue}
                     onChange={(e) => setEditValue(e.target.value)}
@@ -209,9 +239,13 @@ export default function PropertyDetailPage() {
                   />
                 </div>
                 <div>
-                  <label className="text-xs text-zinc-500">Monthly Income</label>
+                  <label htmlFor="edit-income" className="text-xs text-zinc-500">
+                    Monthly Income
+                  </label>
                   <input
-                    type="text"
+                    id="edit-income"
+                    type="number"
+                    inputMode="decimal"
                     placeholder="e.g. 1500"
                     value={editIncome}
                     onChange={(e) => setEditIncome(e.target.value)}
@@ -219,27 +253,8 @@ export default function PropertyDetailPage() {
                   />
                 </div>
                 <button
-                  onClick={() => {
-                    const updates: { id: typeof propertyId; value?: string; income?: string } = {
-                      id: propertyId,
-                    };
-                    if (editValue) updates.value = editValue;
-                    if (editIncome) updates.income = editIncome;
-                    setSaveStatus(null);
-                    fetch("/api/properties/update", {
-                      method: "PATCH",
-                      body: JSON.stringify(updates),
-                    })
-                      .then(async (res) => {
-                        const body = await res.json();
-                        if (res.ok && body.ok) {
-                          setSaveStatus({ ok: true, message: "Saved." });
-                        } else {
-                          setSaveStatus({ ok: false, message: body.reason ?? "Could not save." });
-                        }
-                      })
-                      .catch(() => setSaveStatus({ ok: false, message: "Could not save." }));
-                  }}
+                  type="button"
+                  onClick={handleSave}
                   className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
                 >
                   Save Changes

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { findActiveProperty, findRawPropertyById } from "@/data/normalize";
+import { calculateNetCashflow, calculateRoi } from "@/lib/metrics";
 import type { PropertyDetail, PropertyStats } from "@/types/property";
 
 // yes, query param instead of RESTful path. deal with it.
@@ -20,12 +21,14 @@ export async function GET(request: Request) {
     return NextResponse.json({ message: "Property not found" }, { status: 404 });
   }
 
-  const roi = ((property.currentValue - property.purchasePrice) / property.purchasePrice) * 100;
-  const net = property.monthlyIncome - property.monthlyExpenses;
+  const roi = calculateRoi(property.currentValue, property.purchasePrice);
+  const net = calculateNetCashflow(property.monthlyIncome, property.monthlyExpenses);
 
   const raw = findRawPropertyById(id);
+  // No ROI means no trend either - a direction derived from a non-number would be a
+  // fabricated arrow, which is what `NaN >= 0 ? "up" : "down"` used to produce.
   const stats: PropertyStats | null =
-    raw?.analytics === null
+    raw?.analytics === null || roi === null
       ? null
       : {
           roi,
@@ -37,6 +40,7 @@ export async function GET(request: Request) {
     id: property.id,
     name: property.name,
     address: property.address,
+    currency: property.currency,
     purchasePrice: property.purchasePrice,
     currentValue: property.currentValue,
     monthlyIncome: property.monthlyIncome,
